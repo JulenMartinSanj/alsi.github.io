@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="es"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Monitor">
+<title>Monitor</title>
+<style>
+html,body{margin:0;height:100%;background:#000;color:#fff;font-family:system-ui,sans-serif;overflow:hidden}
+#app{display:grid;grid-template-columns:1fr 240px;height:100%}
+canvas{width:100%;height:100%;display:block}
+#wrap{position:relative;min-width:0}
+.lb{position:absolute;left:8px;font-size:13px;font-weight:600;pointer-events:none}
+#nums{display:flex;flex-direction:column;border-left:1px solid #333}
+.n{flex:1;padding:6px 14px;border-bottom:1px solid #333}
+.n small{color:#aaa;font-size:14px}
+.n b{display:block;font-size:56px;line-height:1.1}
+#start{position:fixed;inset:0;background:#000e;display:flex;align-items:center;justify-content:center;font-size:26px;cursor:pointer;text-align:center}
+#flash{position:fixed;inset:0;background:#fff;opacity:0;pointer-events:none;transition:opacity .5s}
+#aviso{position:fixed;left:8px;bottom:4px;font-size:11px;color:#666}
+#pair{position:fixed;inset:0;background:#000f;display:flex;align-items:center;justify-content:center;text-align:center;cursor:pointer}
+#pbox{background:#111;border:1px solid #333;border-radius:16px;padding:24px 32px;max-width:420px}
+#pbox h2{margin:0 0 12px}
+#qr{background:#fff;padding:10px;border-radius:8px;display:inline-block;line-height:0}
+#qr svg{width:260px;height:260px}
+#urls div{font-size:12px;color:#8ab;margin:3px 0;word-break:break-all}
+#urls div.sel{color:#3f3;font-weight:700}
+#pbox small{color:#888;display:block;margin-top:10px}
+#link{position:fixed;right:10px;bottom:4px;font-size:12px;color:#888}
+</style>
+<div id="app">
+  <div id="wrap">
+    <canvas id="cv"></canvas>
+    <span class="lb" style="top:1%;color:#3f3">ECG II</span>
+    <span class="lb" style="top:26%;color:#3ef">PLETH</span>
+    <span class="lb" style="top:51%;color:#f44">ART <small style="font-weight:400">0-220 mmHg</small></span>
+    <span class="lb" style="top:76%;color:#fe3">CO₂</span>
+  </div>
+  <div id="nums">
+    <div class="n" style="color:#3f3"><small>FC (lpm)</small><b id="hr">--</b></div>
+    <div class="n" style="color:#3ef"><small>SpO₂ (%)</small><b id="spo2">--</b></div>
+    <div class="n" style="color:#f66"><small>PA (mmHg)</small><b id="pa" style="font-size:40px">--</b></div>
+    <div class="n" style="color:#fe3"><small>EtCO₂ (mmHg)</small><b id="etco2">--</b></div>
+    <div class="n" style="color:#fff"><small>FR (rpm)</small><b id="rr">--</b></div>
+    <div class="n" style="color:#b700ff"><small>T (ºC)</small><b id="t">--</b></div>
+    
+  </div>
+</div>
+<div id="flash"></div>
+<div id="pair"><div id="pbox">
+  <h2>Enlazar instructor</h2>
+  <div id="qr"></div>
+  <p>Escanea el código con el móvil<br>(misma red Wi-Fi que este equipo)</p>
+  <div id="urls"></div>
+  <small>Toca fuera del código para continuar sin instructor · tecla Q: mostrar de nuevo · tecla N: código nuevo</small>
+</div></div>
+<div id="link"></div>
+<div id="aviso">Herramienta de simulación para formación. No es un dispositivo médico.</div>
+<div id="start">Toca para iniciar<br>(activa sonido y pantalla completa)</div>
+<script src="qrcode.js"></script>
+<script src="peerjs.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+
+// 1. Estado Objetivo y Estado Actual
+let TargetS = { rhythm: 'SIN', hr: 75, spo2: 98, sys: 120, dia: 80, rr: 14, etco2: 38, t: 36.5 };
+let S = { ...TargetS }; 
+
+const cv = $('cv'), c = cv.getContext('2d');
+let ac = null;
+
+// ---------- Sonido ----------
+function tone(f, d, vol = .1) {
+  if (!ac) return;
+  const o = ac.createOscillator(), g = ac.createGain();
+  o.frequency.value = f; g.gain.value = vol;
+  o.connect(g); g.connect(ac.destination);
+  o.start(); o.stop(ac.currentTime + d);
+}
+function beep() {
+  if (S.hr > 0 && S.rhythm !== 'VF' && S.rhythm !== 'ASY') tone(600 + (S.spo2 || 90) * 2, .08);
+}
+$('start').onclick = () => {
+  ac = new (window.AudioContext || window.webkitAudioContext)();
+  $('start').style.display = 'none';
+  if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
+};
+
+// ---------- Generador de señales ----------
+const g = (t, c, w, a) => a * Math.exp(-(((t - c) / w) ** 2) / 2);
+const sm = (x, a, b) => { x = Math.min(1, Math.max(0, (x - a) / (b - a))); return x * x * (3 - 2 * x); };
+let bp = 0, rrs = .8, vt = 0, rp = 0;
+
+function step(dt) {
+  const hr = Math.max(S.hr, 30), R = S.rhythm;
+  let e = 0, p = 0, k = 0, a = 0;
+  if (R === 'VF') {
+    vt += dt;
+    e = .5 * Math.sin(vt * 27) * (.7 + .3 * Math.sin(vt * 1.7)) + .3 * Math.sin(vt * 44 + 1);
+  } else if (R === 'ASY') {
+    e = (Math.random() - .5) * .03;
+  } else {
+    bp += dt / rrs;
+    if (bp >= 1) { bp -= 1; rrs = 60 / hr * (R === 'AF' ? .6 + Math.random() * .8 : 1); beep(); }
+    const t = bp * rrs;
+    if (R === 'VT') e = Math.sin(bp * 6.283) * .9;
+    else e = (R === 'AF' ? (Math.random() - .5) * .05 : g(t, .1, .03, .15))
+      + g(t, .22, .008, -.12) + g(t, .25, .012, 1) + g(t, .28, .01, -.25)
+      + g(t, .25 + .2 * Math.min(1, rrs / .8), .05, .3);
+    if (S.spo2 > 0 && S.hr > 0) p = g(t, .4, .1, 1) + g(t, .62, .08, .2);
+    // Onda arterial: base = diastólica, pico = sistólica, con muesca dicrota
+    if (S.sys > 0 && S.hr > 0) {
+      const sh = Math.min(1, g(t, .36, .09, 1) + g(t, .6, .07, .22));
+      a = S.dia + (S.sys - S.dia) * sh;
+    }
+  }
+  rp += dt * S.rr / 60; if (rp >= 1) rp -= 1;
+  if (S.etco2 > 0 && S.rr > 0)
+    k = Math.min(1, S.etco2 / 50) * (sm(rp, .02, .08) - sm(rp, .45, .52)) * (.9 + .1 * rp / .45);
+  return { e, p, k, a };
+}
+
+// ---------- Dibujo con barrido y Transición ----------
+let x = 0, py = [null, null, null, null], acc = 0, last = performance.now();
+let tiempoUI = 0; // NUEVO: Reloj interno para los saltos de los números
+const COL = ['#3f3', '#3ef', '#f44', '#fe3'];
+
+function fit() {
+  cv.width = cv.clientWidth; cv.height = cv.clientHeight;
+  c.fillStyle = '#000'; c.fillRect(0, 0, cv.width, cv.height);
+  x = 0; py = [null, null, null, null];
+}
+addEventListener('resize', fit); fit();
+
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, .1); last = now;
+  
+  // Transición suave interna (Matemáticas en segundo plano)
+  const velocidad = 0.2;
+  const variables = ['hr', 'spo2', 'sys', 'dia', 'rr', 'etco2', 't'];
+
+  for (let key of variables) {
+    if (Math.abs(TargetS[key] - S[key]) > 0.1) {
+      S[key] += (TargetS[key] - S[key]) * dt * velocidad;
+    } else if (S[key] !== TargetS[key]) {
+      S[key] = TargetS[key];
+    }
+  }
+  
+  // NUEVO: Lógica de actualización a saltos
+  tiempoUI += dt; // Sumamos el tiempo que ha pasado en este frame
+  if (tiempoUI >= 0.5) { // Si ha pasado medio segundo (0.5s)
+    ui();                // Actualizamos los números en pantalla
+    tiempoUI = 0;        // Reiniciamos el reloj de la UI
+  }
+  
+  // Dibujado de gráficas (se ejecuta siempre en cada frame)
+  const speed = 140, w = cv.width, h = cv.height / 4;
+  acc += dt * speed;
+  const n = Math.floor(acc); acc -= n;
+  for (let i = 0; i < n; i++) {
+    const v = step(1 / speed);
+    x = (x + 1) % w;
+    if (x === 0) py = [null, null, null, null];
+    c.fillStyle = '#000'; c.fillRect(x, 0, 14, cv.height);
+    const ys = [h * .75 - v.e * h * .6, h + h * .9 - v.p * h * .7, 2 * h + h * .95 - Math.min(v.a / 220, 1) * h * .85, 3 * h + h * .9 - v.k * h * .7];
+    for (let j = 0; j < 4; j++) {
+      if (py[j] !== null && x > 0) {
+        c.strokeStyle = COL[j]; c.lineWidth = 2;
+        c.beginPath(); c.moveTo(x - 1, py[j]); c.lineTo(x, ys[j]); c.stroke();
+      }
+      py[j] = ys[j];
+    }
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ---------- Valores numéricos y comunicación ----------
+let lastUI = {};
+function ui() {
+  const v = n => n > 0 ? Math.round(n) : '--';
+  
+  const hr = v(S.hr), spo2 = v(S.spo2), sys = v(S.sys), dia = v(S.dia), etco2 = v(S.etco2), rr = v(S.rr), t = v(S.t);
+  
+  if (lastUI.hr !== hr) { $('hr').textContent = hr; lastUI.hr = hr; }
+  if (lastUI.spo2 !== spo2) { $('spo2').textContent = spo2; lastUI.spo2 = spo2; }
+  if (lastUI.sys !== sys || lastUI.dia !== dia) { 
+    $('pa').textContent = S.sys > 0 ? sys + '/' + dia : '--'; 
+    lastUI.sys = sys; lastUI.dia = dia; 
+  }
+  if (lastUI.etco2 !== etco2) { $('etco2').textContent = etco2; lastUI.etco2 = etco2; }
+  if (lastUI.rr !== rr) { $('rr').textContent = rr; lastUI.rr = rr; }
+  if (lastUI.t !== t) { $('t').textContent = t; lastUI.t = t; }
+}
+
+function shock() {
+  tone(90, .5, .3);
+  $('flash').style.transition = 'none'; $('flash').style.opacity = 1;
+  setTimeout(() => { $('flash').style.transition = 'opacity .5s'; $('flash').style.opacity = 0; }, 60);
+}
+
+ui();
+
+// ---------- Enlace con el instructor (QR + WebRTC) ----------
+const conns = new Set();
+const RITMOS = ['SIN', 'AF', 'VT', 'VF', 'ASY'];
+const broadcast = m => conns.forEach(c => c.open && c.send(m));
+
+function newId() {
+  const a = new Uint8Array(10); crypto.getRandomValues(a);
+  return 'sim' + [...a].map(b => 'abcdefghijkmnpqrstuvwxyz23456789'[b % 32]).join('');
+}
+function onCmd(m) {
+  if (!m || typeof m !== 'object') return;
+  if (m.shock) { shock(); return; }
+  for (const k in m) {
+    if (!(k in TargetS)) continue;
+    if (k === 'rhythm' ? RITMOS.includes(m[k]) : Number.isFinite(m[k])) TargetS[k] = m[k];
+  }
+  S.rhythm = TargetS.rhythm;
+  broadcast({ state: TargetS });
+}
+function linked() {
+  const n = conns.size;
+  $('link').textContent = n > 0 ? '📱 Instructor enlazado' + (n > 1 ? ' (' + n + ')' : '') : '📱 Sin instructor (pulsa Q para enlazar)';
+  $('link').style.color = n > 0 ? '#3f3' : '#888';
+  $('pair').style.display = n > 0 ? 'none' : 'flex';
+}
+function showQR(id) {
+  const u = new URL('instructor.html', location.href).href + '#' + id;
+  const q = qrcode(0, 'M'); q.addData(u); q.make();
+  $('qr').innerHTML = q.createSvgTag(6, 0);
+  $('urls').innerHTML = '<div class="sel">Código: ' + id + '</div><div>' + u + '</div>';
+}
+let peer;
+function start(id) {
+  try { localStorage.setItem('simId', id); } catch (e) {}
+  $('urls').textContent = 'Conectando con el servicio de enlace…';
+  peer = new Peer(id);
+  peer.on('open', () => showQR(id));
+  peer.on('connection', conn => {
+    conn.on('open', () => { conns.add(conn); conn.send({ state: TargetS }); linked(); });
+    conn.on('data', onCmd);
+    const gone = () => { conns.delete(conn); linked(); };
+    conn.on('close', gone); conn.on('error', gone);
+  });
+  peer.on('disconnected', () => peer.reconnect());
+  peer.on('error', e => {
+    if (e.type === 'unavailable-id') { peer.destroy(); start(newId()); }
+    else if (['network', 'server-error', 'socket-error', 'socket-closed'].includes(e.type)) {
+      $('urls').textContent = 'Sin conexión con el servicio de enlace. ¿Hay internet? Reintentando…';
+      setTimeout(() => { peer.destroy(); start(id); }, 5000);
+    }
+  });
+}
+let saved = null; try { saved = localStorage.getItem('simId'); } catch (e) {}
+start(saved || newId());
+linked();
+
+$('pbox').onclick = e => e.stopPropagation();
+$('pair').onclick = () => { $('pair').style.display = 'none'; };
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'q') $('pair').style.display = 'flex';
+  if (k === 'n') { try { localStorage.removeItem('simId'); } catch (x) {} location.reload(); }
+});
+
+// Evitar que la pantalla se apague
+async function lock() { try { await navigator.wakeLock.request('screen'); } catch (e) {} }
+$('start').addEventListener('click', lock);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && ac) lock(); });
+</script>
+</html>

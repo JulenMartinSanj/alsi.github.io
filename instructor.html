@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="es"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Instructor">
+<title>Instructor</title>
+<style>
+body{font-family:system-ui,sans-serif;margin:0;padding:12px;background:#111;color:#eee}
+h3{margin:16px 0 6px}
+.g{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+button{padding:16px 8px;font-size:17px;border:0;border-radius:10px;background:#2b3a55;color:#fff}
+button:active{background:#1f9d55}
+#shock{background:#d33;width:100%;font-size:22px;margin-top:14px}
+label{display:flex;justify-content:space-between;margin-top:12px}
+input[type=range]{width:100%}
+p{font-size:12px;color:#888}
+#st{padding:8px 12px;border-radius:8px;background:#444;font-size:14px}
+#st.ok{background:#14532d}
+#st.bad{background:#7f1d1d}
+</style>
+<body>
+<div id="st">Conectando…</div>
+<h3>Ritmo / escenario</h3>
+<div class="g" id="pre"></div>
+<h3>Constantes</h3>
+<div id="sl"></div>
+<button id="shock">⚡ DESCARGA</button>
+<button id="chg" style="width:100%;margin-top:14px;background:#333;font-size:14px;padding:10px">Cambiar de monitor</button>
+<p>Herramienta de simulación para formación. No es un dispositivo médico.</p>
+<script src="peerjs.min.js"></script>
+<script>
+(function () {
+let ID = location.hash.slice(1) || null, conn = null, peer = null;
+try { if (ID) localStorage.setItem('simMon', ID); else ID = localStorage.getItem('simMon'); } catch (e) {}
+if (!ID) {
+  document.body.innerHTML = '<h3>Sin enlazar</h3><p style="font-size:16px">Escanea el código QR del monitor con la cámara, o escribe su código:</p>'
+    + '<input id="c" style="width:100%;padding:12px;font-size:18px;box-sizing:border-box" placeholder="sim..."><button id="go" style="width:100%;margin-top:10px">Enlazar</button>';
+  document.getElementById('go').onclick = () => { const v = document.getElementById('c').value.split('#').pop().trim(); if (v) location.hash = v, location.reload(); };
+  return;
+}
+const st = (ok, txt) => { const e = document.getElementById('st'); e.className = ok ? 'ok' : 'bad'; e.textContent = txt; };
+const P = {
+  'Sinusal normal':     { rhythm: 'SIN', hr: 75,  spo2: 98, sys: 120, dia: 80, rr: 14, etco2: 38, t:36.5 },
+  'Bradicardia':        { rhythm: 'SIN', hr: 38,  spo2: 93, sys: 85,  dia: 50, rr: 16, etco2: 34, t:36.5 },
+  'Taquicardia sinusal':{ rhythm: 'SIN', hr: 150, spo2: 96, sys: 110, dia: 70, rr: 24, etco2: 34, t:36.5 },
+  'Fibrilación auricular':{ rhythm: 'AF', hr: 130, spo2: 95, sys: 105, dia: 70, rr: 20, etco2: 35, t:36.5 },
+  'TV con pulso':       { rhythm: 'VT',  hr: 170, spo2: 92, sys: 80,  dia: 50, rr: 22, etco2: 30, t:36.5 },
+  'Fibrilación ventricular': { rhythm: 'VF', hr: 0, spo2: 0, sys: 0, dia: 0, rr: 0, etco2: 10, t:36.5 },
+  'Asistolia':          { rhythm: 'ASY', hr: 0,   spo2: 0,  sys: 0,   dia: 0,  rr: 0,  etco2: 8, t:36.5 },
+};
+const F = [['hr','FC',0,220],['spo2','SpO₂',0,100],['sys','PAS',0,250],['dia','PAD',0,150],['rr','FR',0,40],['etco2','EtCO₂',0,80],['t','T',0,50,0.1]];
+const send = o => { if (conn && conn.open) conn.send(o); };
+
+for (const name in P) {
+  const b = document.createElement('button');
+  b.textContent = name;
+  b.onclick = () => send(P[name]);
+  document.getElementById('pre').appendChild(b);
+}
+
+// Actualizamos el bucle para extraer el 'step' y aplicarlo al input
+for (const [k, label, min, max, step] of F) {
+  const l = document.createElement('label');
+  l.innerHTML = `<span>${label}</span><span id="v_${k}">-</span>`;
+  const r = document.createElement('input');
+  r.type = 'range'; r.min = min; r.max = max; r.step = step || 1; r.id = 's_' + k;
+  r.oninput = () => { document.getElementById('v_' + k).textContent = r.value; send({ [k]: +r.value }); };
+  document.getElementById('sl').append(l, r);
+}
+
+document.getElementById('chg').onclick = () => { try { localStorage.removeItem('simMon'); } catch (e) {} location.href = location.pathname; };
+document.getElementById('shock').onclick = () => send({ shock: true });
+
+let retry = null;
+const later = () => { clearTimeout(retry); retry = setTimeout(connect, 2000); };
+function connect() {
+  if (!peer || peer.destroyed) return;
+  if (conn) { try { conn.close(); } catch (e) {} }
+  conn = peer.connect(ID, { reliable: true });
+  conn.on('open', () => st(true, '● Enlazado con el monitor'));
+  conn.on('data', m => onData(m));
+  conn.on('close', () => { st(false, '… Monitor desconectado, reintentando'); later(); });
+  conn.on('error', later);
+}
+peer = new Peer();
+peer.on('open', () => { st(false, 'Conectando…'); connect(); });
+peer.on('disconnected', () => peer.reconnect());
+peer.on('error', e => {
+  if (e.type === 'peer-unavailable') { st(false, '… Monitor no encontrado (¿está abierto? ¿código correcto?)'); later(); }
+  else if (['network', 'server-error', 'socket-error'].includes(e.type)) st(false, '✖ Sin conexión con el servicio de enlace (¿hay internet?)');
+});
+const onData = m => {
+  if (!m.state) return;
+  for (const [k] of F) {
+    document.getElementById('s_' + k).value = m.state[k];
+    document.getElementById('v_' + k).textContent = m.state[k];
+  }
+};
+})();
+</script>
+</html>
