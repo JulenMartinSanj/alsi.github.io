@@ -34,7 +34,7 @@ p{font-size:12px;color:#888}
 <script src="peerjs.min.js"></script>
 <script>
 (function () {
-let ID = location.hash.slice(1) || null, conn = null, peer = null;
+let ID = new URLSearchParams(location.search).get('id') || location.hash.slice(1) || null, conn = null, peer = null;
 try { if (ID) localStorage.setItem('simMon', ID); else ID = localStorage.getItem('simMon'); } catch (e) {}
 if (!ID) {
   document.body.innerHTML = '<h3>Sin enlazar</h3><p style="font-size:16px">Escanea el código QR del monitor con la cámara, o escribe su código:</p>'
