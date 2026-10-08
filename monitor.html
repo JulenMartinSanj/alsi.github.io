@@ -242,7 +242,7 @@ function linked() {
   $('pair').style.display = n > 0 ? 'none' : 'flex';
 }
 function showQR(id) {
-  const u = new URL('instructor.html', location.href).href + '#' + id;
+  const u = new URL('instructor.html', location.href).href + '?id' + id;
   const q = qrcode(0, 'M'); q.addData(u); q.make();
   $('qr').innerHTML = q.createSvgTag(6, 0);
   $('urls').innerHTML = '<div class="sel">Código: ' + id + '</div><div>' + u + '</div>';
