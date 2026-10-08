@@ -14,6 +14,10 @@ button:active{background:#1f9d55}
 label{display:flex;justify-content:space-between;margin-top:12px}
 input[type=range]{width:100%}
 p{font-size:12px;color:#888}
+.row{display:flex;align-items:center;gap:10px;margin-top:12px}
+.row label{flex:1;margin-top:0}
+.tg{padding:8px 12px;font-size:14px;background:#14532d;min-width:110px}
+.tg.off{background:#555}
 #st{padding:8px 12px;border-radius:8px;background:#444;font-size:14px}
 #st.ok{background:#14532d}
 #st.bad{background:#7f1d1d}
@@ -48,7 +52,7 @@ const P = {
   'Fibrilación ventricular': { rhythm: 'VF', hr: 0, spo2: 0, sys: 0, dia: 0, rr: 0, etco2: 10, t:36.5 },
   'Asistolia':          { rhythm: 'ASY', hr: 0,   spo2: 0,  sys: 0,   dia: 0,  rr: 0,  etco2: 8, t:36.5 },
 };
-const F = [['hr','FC',0,220],['spo2','SpO₂',0,100],['sys','PAS',0,250],['dia','PAD',0,150],['rr','FR',0,40],['etco2','EtCO₂',0,80],['t','T',0,50,0.1]];
+const F = [['hr','FC',0,220,1,false],['spo2','SpO₂',0,100,1,false],['sys','PAS',0,250,1,false],['dia','PAD',0,150,1,false],['rr','FR',0,40,1,false],['etco2','EtCO₂',0,80,1,false],['t','T',25,45,0.1,false]];
 const send = o => { if (conn && conn.open) conn.send(o); };
 
 for (const name in P) {
@@ -58,18 +62,45 @@ for (const name in P) {
   document.getElementById('pre').appendChild(b);
 }
 
-// Actualizamos el bucle para extraer el 'step' y aplicarlo al input
+// Cada constante tiene su flag de visibilidad en el servidor.
+// PAS y PAD comparten 'ten_show' (un solo botón, en la fila de PAS).
+const SHOW = { hr: 'hr_show', spo2: 'spo2_show', sys: 'ten_show', rr: 'rr_show', etco2: 'etco2_show', t: 't_show' };
+const shown = {}, btns = {};
+const paint = key => {
+  const on = shown[key] !== false, b = btns[key];
+  b.textContent = on ? '👁 Visible' : '🚫 Oculto';
+  b.classList.toggle('off', !on);
+};
+
 for (const [k, label, min, max, step] of F) {
   const l = document.createElement('label');
   l.innerHTML = `<span>${label}</span><span id="v_${k}">-</span>`;
   const r = document.createElement('input');
   r.type = 'range'; r.min = min; r.max = max; r.step = step || 1; r.id = 's_' + k;
   r.oninput = () => { document.getElementById('v_' + k).textContent = r.value; send({ [k]: +r.value }); };
-  document.getElementById('sl').append(l, r);
+
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.appendChild(l);
+  const key = SHOW[k];
+  if (key) {
+    const b = document.createElement('button');
+    b.className = 'tg';
+    btns[key] = b;
+    b.onclick = () => {
+      shown[key] = !(shown[key] !== false);
+      paint(key);
+      send({ [key]: shown[key] });
+    };
+    row.appendChild(b);
+    paint(key);
+  }
+  document.getElementById('sl').append(row, r);
 }
 
-document.getElementById('chg').onclick = () => { try { localStorage.removeItem('simMon'); } catch (e) {} location.href = location.pathname; };
 document.getElementById('shock').onclick = () => send({ shock: true });
+
+document.getElementById('chg').onclick = () => { try { localStorage.removeItem('simMon'); } catch (e) {} location.href = location.pathname; };
 
 let retry = null;
 const later = () => { clearTimeout(retry); retry = setTimeout(connect, 2000); };
@@ -95,6 +126,7 @@ const onData = m => {
     document.getElementById('s_' + k).value = m.state[k];
     document.getElementById('v_' + k).textContent = m.state[k];
   }
+  for (const key in btns) { shown[key] = m.state[key]; paint(key); }
 };
 })();
 </script>

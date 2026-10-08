@@ -51,7 +51,7 @@ canvas{width:100%;height:100%;display:block}
 <div id="pair"><div id="pbox">
   <h2>Enlazar instructor</h2>
   <div id="qr"></div>
-  <p>Escanea el código con el móvil<br>(misma red Wi-Fi que este equipo)</p>
+  <p>Escanea el código con el móvil<br>(cualquier red; ambos equipos necesitan internet)</p>
   <div id="urls"></div>
   <small>Toca fuera del código para continuar sin instructor · tecla Q: mostrar de nuevo · tecla N: código nuevo</small>
 </div></div>
@@ -64,7 +64,7 @@ canvas{width:100%;height:100%;display:block}
 const $ = id => document.getElementById(id);
 
 // 1. Estado Objetivo y Estado Actual
-let TargetS = { rhythm: 'SIN', hr: 75, spo2: 98, sys: 120, dia: 80, rr: 14, etco2: 38, t: 36.5 };
+let TargetS = { rhythm: 'SIN', hr: 75, hr_show:false, spo2: 98, spo2_show:false, sys: 120, dia: 80, ten_show:false, rr: 14, rr_show:false, etco2: 38, etco2_show:false, t: 36.5, t_show:false };
 let S = { ...TargetS }; 
 
 const cv = $('cv'), c = cv.getContext('2d');
@@ -140,6 +140,7 @@ function frame(now) {
   const velocidad = 0.2;
   const variables = ['hr', 'spo2', 'sys', 'dia', 'rr', 'etco2', 't'];
 
+
   for (let key of variables) {
     if (Math.abs(TargetS[key] - S[key]) > 0.1) {
       S[key] += (TargetS[key] - S[key]) * dt * velocidad;
@@ -156,43 +157,51 @@ function frame(now) {
   }
   
   // Dibujado de gráficas (se ejecuta siempre en cada frame)
-  const speed = 140, w = cv.width, h = cv.height / 4;
-  acc += dt * speed;
-  const n = Math.floor(acc); acc -= n;
-  for (let i = 0; i < n; i++) {
-    const v = step(1 / speed);
-    x = (x + 1) % w;
-    if (x === 0) py = [null, null, null, null];
-    c.fillStyle = '#000'; c.fillRect(x, 0, 14, cv.height);
-    const ys = [h * .75 - v.e * h * .6, h + h * .9 - v.p * h * .7, 2 * h + h * .95 - Math.min(v.a / 220, 1) * h * .85, 3 * h + h * .9 - v.k * h * .7];
-    for (let j = 0; j < 4; j++) {
-      if (py[j] !== null && x > 0) {
-        c.strokeStyle = COL[j]; c.lineWidth = 2;
-        c.beginPath(); c.moveTo(x - 1, py[j]); c.lineTo(x, ys[j]); c.stroke();
+    let show_signal = [TargetS.hr_show, TargetS.spo2_show, TargetS.ten_show, TargetS.etco2_show]
+    const speed = 140, w = cv.width, h = cv.height / 4;
+    acc += dt * speed;
+    const n = Math.floor(acc); acc -= n;
+    for (let i = 0; i < n; i++) {
+      const v = step(1 / speed);
+      x = (x + 1) % w;
+      if (x === 0) py = [null, null, null, null];
+      c.fillStyle = '#000'; c.fillRect(x, 0, 14, cv.height);
+      const ys = [h * .75 - v.e * h * .6, h + h * .9 - v.p * h * .7, 2 * h + h * .95 - Math.min(v.a / 220, 1) * h * .85, 3 * h + h * .9 - v.k * h * .7];
+      for (let j = 0; j < 4; j++) {
+        if (show_signal[j]==true){
+          if (py[j] !== null && x > 0) {
+          c.strokeStyle = COL[j]; c.lineWidth = 2;
+          c.beginPath(); c.moveTo(x - 1, py[j]); c.lineTo(x, ys[j]); c.stroke();
+        }
+        py[j] = ys[j];
+        }
+        else{
+          py[j] = null;
+        }
+        
       }
-      py[j] = ys[j];
     }
+    requestAnimationFrame(frame);
   }
-  requestAnimationFrame(frame);
-}
+  
 requestAnimationFrame(frame);
 
 // ---------- Valores numéricos y comunicación ----------
 let lastUI = {};
 function ui() {
   const v = n => n > 0 ? Math.round(n) : '--';
-  
-  const hr = v(S.hr), spo2 = v(S.spo2), sys = v(S.sys), dia = v(S.dia), etco2 = v(S.etco2), rr = v(S.rr), t = v(S.t);
-  
-  if (lastUI.hr !== hr) { $('hr').textContent = hr; lastUI.hr = hr; }
-  if (lastUI.spo2 !== spo2) { $('spo2').textContent = spo2; lastUI.spo2 = spo2; }
-  if (lastUI.sys !== sys || lastUI.dia !== dia) { 
-    $('pa').textContent = S.sys > 0 ? sys + '/' + dia : '--'; 
-    lastUI.sys = sys; lastUI.dia = dia; 
-  }
-  if (lastUI.etco2 !== etco2) { $('etco2').textContent = etco2; lastUI.etco2 = etco2; }
-  if (lastUI.rr !== rr) { $('rr').textContent = rr; lastUI.rr = rr; }
-  if (lastUI.t !== t) { $('t').textContent = t; lastUI.t = t; }
+  // Los flags _show se leen de TargetS (siempre tiene el valor real del servidor)
+  const T = TargetS;
+  const set = (id, show, txt) => {
+    const out = show ? txt : '--';
+    if (lastUI[id] !== out) { $(id).textContent = out; lastUI[id] = out; }
+  };
+  set('hr',    T.hr_show,    v(S.hr));
+  set('spo2',  T.spo2_show,  v(S.spo2));
+  set('pa',    T.ten_show,   S.sys > 0 ? v(S.sys) + '/' + v(S.dia) : '--');
+  set('etco2', T.etco2_show, v(S.etco2));
+  set('rr',    T.rr_show,    v(S.rr));
+  set('t',     T.t_show,     S.t > 0 ? S.t.toFixed(1) : '--');
 }
 
 function shock() {
@@ -203,9 +212,11 @@ function shock() {
 
 ui();
 
-// ---------- Enlace con el instructor (QR + WebRTC) ----------
+// ---------- Enlace con el instructor (QR + WebRTC / PeerJS) ----------
 const conns = new Set();
 const RITMOS = ['SIN', 'AF', 'VT', 'VF', 'ASY'];
+const NUM = ['hr', 'spo2', 'sys', 'dia', 'rr', 'etco2', 't'];
+const BOOL = ['hr_show', 'spo2_show', 'ten_show', 'rr_show', 'etco2_show', 't_show'];
 const broadcast = m => conns.forEach(c => c.open && c.send(m));
 
 function newId() {
@@ -216,10 +227,12 @@ function onCmd(m) {
   if (!m || typeof m !== 'object') return;
   if (m.shock) { shock(); return; }
   for (const k in m) {
-    if (!(k in TargetS)) continue;
-    if (k === 'rhythm' ? RITMOS.includes(m[k]) : Number.isFinite(m[k])) TargetS[k] = m[k];
+    if (k === 'rhythm') { if (RITMOS.includes(m[k])) TargetS[k] = m[k]; }
+    else if (NUM.includes(k)) { if (Number.isFinite(m[k])) TargetS[k] = m[k]; }
+    else if (BOOL.includes(k)) { if (typeof m[k] === 'boolean') TargetS[k] = m[k]; }
   }
   S.rhythm = TargetS.rhythm;
+  ui();
   broadcast({ state: TargetS });
 }
 function linked() {
