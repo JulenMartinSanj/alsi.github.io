@@ -51,7 +51,7 @@ canvas{width:100%;height:100%;display:block}
 <div id="pair"><div id="pbox">
   <h2>Enlazar instructor</h2>
   <div id="qr"></div>
-  <p>Escanea el código con el móvil<br>(cualquier red; ambos equipos necesitan internet)</p>
+  <p>Escanea el código con el móvil<br>(vale cualquier red o datos móviles; ambos equipos necesitan internet)</p>
   <div id="urls"></div>
   <small>Toca fuera del código para continuar sin instructor · tecla Q: mostrar de nuevo · tecla N: código nuevo</small>
 </div></div>
@@ -59,7 +59,8 @@ canvas{width:100%;height:100%;display:block}
 <div id="aviso">Herramienta de simulación para formación. No es un dispositivo médico.</div>
 <div id="start">Toca para iniciar<br>(activa sonido y pantalla completa)</div>
 <script src="qrcode.js"></script>
-<script src="peerjs.min.js"></script>
+<script src="mqtt.min.js"></script>
+<script src="link.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 
@@ -86,6 +87,10 @@ $('start').onclick = () => {
   $('start').style.display = 'none';
   if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
 };
+
+function grave_beep() {
+  if (S.spo2 <=90 | (S.sys >=180 & S.dia >=120) | (S.sys <=90 & S.dia <=60) ) tone(1200, .5, .5);
+}
 
 // ---------- Generador de señales ----------
 const g = (t, c, w, a) => a * Math.exp(-(((t - c) / w) ** 2) / 2);
@@ -151,8 +156,9 @@ function frame(now) {
   
   // NUEVO: Lógica de actualización a saltos
   tiempoUI += dt; // Sumamos el tiempo que ha pasado en este frame
-  if (tiempoUI >= 0.5) { // Si ha pasado medio segundo (0.5s)
+  if (tiempoUI >= 1) { // Si ha pasado 1 segundo
     ui();                // Actualizamos los números en pantalla
+    grave_beep();         // Comprobamos si hay que emitir un pitido grave
     tiempoUI = 0;        // Reiniciamos el reloj de la UI
   }
   
@@ -196,11 +202,64 @@ function ui() {
     const out = show ? txt : '--';
     if (lastUI[id] !== out) { $(id).textContent = out; lastUI[id] = out; }
   };
-  set('hr',    T.hr_show,    v(S.hr));
-  set('spo2',  T.spo2_show,  v(S.spo2));
-  set('pa',    T.ten_show,   S.sys > 0 ? v(S.sys) + '/' + v(S.dia) : '--');
-  set('etco2', T.etco2_show, v(S.etco2));
-  set('rr',    T.rr_show,    v(S.rr));
+  const prob=0.2;
+
+  let hr=S.hr, spo2=S.spo2, sys=S.sys, dia=S.dia, rr=S.rr, etco2=S.etco2;
+  if (Math.random() < prob) {
+    if (Math.random()>0.5){
+      hr+=1;
+    }
+    if (Math.random()<0.5){
+      hr-=1;
+    }
+  }
+  if (Math.random() < prob) {
+    if (Math.random()>0.5){
+      spo2+=1;
+    }
+    if (Math.random()<0.5){
+      spo2-=1;
+    }
+  }
+  if (Math.random() < prob) {
+    if (Math.random()>0.5){
+      sys+=1;
+    }
+    if (Math.random()<0.5){
+      sys-=1;
+    }
+  }
+  if (Math.random() < prob) {
+    if (Math.random()>0.5){
+      dia+=1;
+    }
+    if (Math.random()<0.5){
+      dia-=1;
+    }
+  }
+  if (Math.random() < prob) {
+    if (Math.random()>0.5){
+      rr+=1;
+    }
+    if (Math.random()<0.5){
+      rr-=1;
+    }
+  }
+  if (Math.random() < prob) {
+    if (Math.random()>0.5){
+      etco2+=1;
+    }
+    if (Math.random()<0.5){
+      etco2-=1;
+    }
+  }
+ 
+
+  set('hr',    T.hr_show,    v(hr));
+  set('spo2',  T.spo2_show,  v(spo2));
+  set('pa',    T.ten_show,   sys > 0 ? v(sys) + '/' + v(dia) : '--');
+  set('etco2', T.etco2_show, v(etco2));
+  set('rr',    T.rr_show,    v(rr));
   set('t',     T.t_show,     S.t > 0 ? S.t.toFixed(1) : '--');
 }
 
@@ -212,12 +271,12 @@ function shock() {
 
 ui();
 
-// ---------- Enlace con el instructor (QR + WebRTC / PeerJS) ----------
-const conns = new Set();
+// ---------- Enlace con el instructor (QR + relé MQTT) ----------
 const RITMOS = ['SIN', 'AF', 'VT', 'VF', 'ASY'];
 const NUM = ['hr', 'spo2', 'sys', 'dia', 'rr', 'etco2', 't'];
 const BOOL = ['hr_show', 'spo2_show', 'ten_show', 'rr_show', 'etco2_show', 't_show'];
-const broadcast = m => conns.forEach(c => c.open && c.send(m));
+const instr = new Map();           // id de instructor -> última vez visto
+let link = null, simId = null, stat = { up: 0, total: 0 };
 
 function newId() {
   const a = new Uint8Array(10); crypto.getRandomValues(a);
@@ -233,40 +292,47 @@ function onCmd(m) {
   }
   S.rhythm = TargetS.rhythm;
   ui();
-  broadcast({ state: TargetS });
+  link.send({ t: 'state', state: TargetS });
+}
+function onMsg(m) {
+  if (m.t === 'cmd') onCmd(m.d);
+  else if (m.t === 'hello') {
+    const nuevo = !instr.has(m.f);
+    instr.set(m.f, Date.now());
+    if (nuevo) { link.send({ t: 'state', state: TargetS }); linked(); }
+  } else if (m.t === 'bye') { instr.delete(m.f); linked(); }
 }
 function linked() {
-  const n = conns.size;
+  const n = instr.size;
   $('link').textContent = n > 0 ? '📱 Instructor enlazado' + (n > 1 ? ' (' + n + ')' : '') : '📱 Sin instructor (pulsa Q para enlazar)';
   $('link').style.color = n > 0 ? '#3f3' : '#888';
   $('pair').style.display = n > 0 ? 'none' : 'flex';
 }
-function showQR(id) {
-  const u = new URL('instructor.html', location.href).href + '?id' + id;
+function showQR() {
+  if (!simId) return;
+  const u = new URL('instructor.html', location.href).href + '#' + simId;
   const q = qrcode(0, 'M'); q.addData(u); q.make();
   $('qr').innerHTML = q.createSvgTag(6, 0);
-  $('urls').innerHTML = '<div class="sel">Código: ' + id + '</div><div>' + u + '</div>';
+  $('urls').innerHTML = '<div class="sel">Código: ' + simId + '</div><div>' + u + '</div><div id="net"></div>';
+  netStatus();
 }
-let peer;
+function netStatus() {
+  const e = $('net'); if (!e) return;
+  e.style.color = stat.up > 0 ? '#3f3' : '#f66';
+  e.textContent = stat.up > 0 ? 'Servicio de enlace: conectado (' + stat.up + '/' + stat.total + ')'
+                              : 'Sin conexión con el servicio de enlace. ¿Hay internet? Reintentando…';
+}
 function start(id) {
+  simId = id;
   try { localStorage.setItem('simId', id); } catch (e) {}
-  $('urls').textContent = 'Conectando con el servicio de enlace…';
-  peer = new Peer(id);
-  peer.on('open', () => showQR(id));
-  peer.on('connection', conn => {
-    conn.on('open', () => { conns.add(conn); conn.send({ state: TargetS }); linked(); });
-    conn.on('data', onCmd);
-    const gone = () => { conns.delete(conn); linked(); };
-    conn.on('close', gone); conn.on('error', gone);
-  });
-  peer.on('disconnected', () => peer.reconnect());
-  peer.on('error', e => {
-    if (e.type === 'unavailable-id') { peer.destroy(); start(newId()); }
-    else if (['network', 'server-error', 'socket-error', 'socket-closed'].includes(e.type)) {
-      $('urls').textContent = 'Sin conexión con el servicio de enlace. ¿Hay internet? Reintentando…';
-      setTimeout(() => { peer.destroy(); start(id); }, 5000);
-    }
-  });
+  link = Link.open({ id, role: 'monitor', onMsg, onStatus: s => { stat = s; netStatus(); } });
+  showQR();
+  setInterval(() => link.send({ t: 'hb' }), 5000);
+  setInterval(() => {                       // descartar instructores que ya no dan señales
+    const now = Date.now(); let ch = false;
+    for (const [k, v] of instr) if (now - v > 16000) { instr.delete(k); ch = true; }
+    if (ch) linked();
+  }, 4000);
 }
 let saved = null; try { saved = localStorage.getItem('simId'); } catch (e) {}
 start(saved || newId());

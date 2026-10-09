@@ -31,10 +31,11 @@ p{font-size:12px;color:#888}
 <button id="shock">⚡ DESCARGA</button>
 <button id="chg" style="width:100%;margin-top:14px;background:#333;font-size:14px;padding:10px">Cambiar de monitor</button>
 <p>Herramienta de simulación para formación. No es un dispositivo médico.</p>
-<script src="peerjs.min.js"></script>
+<script src="mqtt.min.js"></script>
+<script src="link.js"></script>
 <script>
 (function () {
-let ID = new URLSearchParams(location.search).get('id') || location.hash.slice(1) || null, conn = null, peer = null;
+let ID = location.hash.slice(1) || null, link = null, lastMon = 0;
 try { if (ID) localStorage.setItem('simMon', ID); else ID = localStorage.getItem('simMon'); } catch (e) {}
 if (!ID) {
   document.body.innerHTML = '<h3>Sin enlazar</h3><p style="font-size:16px">Escanea el código QR del monitor con la cámara, o escribe su código:</p>'
@@ -53,7 +54,7 @@ const P = {
   'Asistolia':          { rhythm: 'ASY', hr: 0,   spo2: 0,  sys: 0,   dia: 0,  rr: 0,  etco2: 8, t:36.5 },
 };
 const F = [['hr','FC',0,220,1,false],['spo2','SpO₂',0,100,1,false],['sys','PAS',0,250,1,false],['dia','PAD',0,150,1,false],['rr','FR',0,40,1,false],['etco2','EtCO₂',0,80,1,false],['t','T',25,45,0.1,false]];
-const send = o => { if (conn && conn.open) conn.send(o); };
+const send = o => { if (link) link.send({ t: 'cmd', d: o }); };
 
 for (const name in P) {
   const b = document.createElement('button');
@@ -102,32 +103,25 @@ document.getElementById('shock').onclick = () => send({ shock: true });
 
 document.getElementById('chg').onclick = () => { try { localStorage.removeItem('simMon'); } catch (e) {} location.href = location.pathname; };
 
-let retry = null;
-const later = () => { clearTimeout(retry); retry = setTimeout(connect, 2000); };
-function connect() {
-  if (!peer || peer.destroyed) return;
-  if (conn) { try { conn.close(); } catch (e) {} }
-  conn = peer.connect(ID, { reliable: true });
-  conn.on('open', () => st(true, '● Enlazado con el monitor'));
-  conn.on('data', m => onData(m));
-  conn.on('close', () => { st(false, '… Monitor desconectado, reintentando'); later(); });
-  conn.on('error', later);
-}
-peer = new Peer();
-peer.on('open', () => { st(false, 'Conectando…'); connect(); });
-peer.on('disconnected', () => peer.reconnect());
-peer.on('error', e => {
-  if (e.type === 'peer-unavailable') { st(false, '… Monitor no encontrado (¿está abierto? ¿código correcto?)'); later(); }
-  else if (['network', 'server-error', 'socket-error'].includes(e.type)) st(false, '✖ Sin conexión con el servicio de enlace (¿hay internet?)');
-});
 const onData = m => {
-  if (!m.state) return;
+  lastMon = Date.now(); refresh();
+  if (m.t !== 'state' || !m.state) return;
   for (const [k] of F) {
     document.getElementById('s_' + k).value = m.state[k];
     document.getElementById('v_' + k).textContent = m.state[k];
   }
   for (const key in btns) { shown[key] = m.state[key]; paint(key); }
 };
+link = Link.open({ id: ID, role: 'instructor', onMsg: onData, onStatus: () => refresh() });
+const refresh = () => {
+  const s = link.stats(), ok = Date.now() - lastMon < 13000;
+  if (ok) st(true, '● Enlazado con el monitor');
+  else if (s.up > 0) st(false, '… Monitor no encontrado (¿está abierto? ¿código correcto?)');
+  else st(false, '… Conectando con el servicio de enlace (¿hay internet?)');
+};
+setInterval(() => { refresh(); link.send({ t: 'hello' }); }, 5000);
+refresh();
+
 })();
 </script>
 </html>
