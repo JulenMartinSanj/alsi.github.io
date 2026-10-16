@@ -89,7 +89,7 @@ $('start').onclick = () => {
 };
 
 function grave_beep() {
-  if ((S.spo2 <=90 | (S.sys >=180 & S.dia >=120) | (S.sys <=90 & S.dia <=60)) && (TargetS.spo2_show==True | TargetS.ten_show==True ) tone(1200, .5, .5);
+  if ((S.spo2 <=90 & TargetS.spo2_show==True) | (S.sys >=180 & S.dia >=120 & TargetS.ten_show==True ) | (S.sys <=90 & S.dia <=60 & TargetS.ten_show==True)) tone(1200, .5, .5);
 }
 
 // ---------- Generador de señales ----------
