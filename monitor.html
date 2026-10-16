@@ -80,7 +80,7 @@ function tone(f, d, vol = .1) {
   o.start(); o.stop(ac.currentTime + d);
 }
 function beep() {
-  if (S.hr > 0 && S.rhythm !== 'VF' && S.rhythm !== 'ASY') tone(600 + (S.spo2 || 90) * 2, .08);
+  if (S.hr > 0 && S.rhythm !== 'VF' && S.rhythm !== 'ASY' %% S.hr_show==true) tone(600 + (S.spo2 || 90) * 2, .08);
 }
 $('start').onclick = () => {
   ac = new (window.AudioContext || window.webkitAudioContext)();
